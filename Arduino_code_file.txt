@@ -1,0 +1,508 @@
+/* This is code for an RFID based Cashierless supermarket system. A customer places tagged items on a conveyor that transports them past an array of 4 RFID scanners. Payment is done via an RFID dummy payment system with a memory feature. An access control system is incorporated to curtail thieves
+Authors:
+Lenny Orengo
+Steve Mwenda
+November 2020 ...26/11/2020.. Eliminates multiple reading*/
+#include <SPI.h>
+#include <MFRC522.h>
+#include <EEPROM.h>             //EEPROM library
+#include <Wire.h>               // 2-wire communication library
+#include <LiquidCrystal_I2C.h>   //I2C LCD library
+#include <SoftwareSerial.h>     //software serial library
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------
+//#define RST_PIN 9
+//#define SS_PIN 10
+//MFRC522 mfrc522(SS_PIN, RST_PIN);
+
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+LiquidCrystal_I2C lcd(0x27,16,2);  // set the LCD address to 0x27 for a 16 chars and 2 line display.
+int count=0;                        // variable for each byte of serial data.
+int data=0;                         // variable for each byte of serial data.
+char input[12];                     // variable for storing item serial data.
+char incoming[12];                  //variable for storing payment serial data. 
+String item[]={"Soap","Cake","tea","Unga"};  //Item and price data.
+String payment_card;               //payment card.
+long price[]={200,150,100,120};
+volatile long balance;             //Payment card balance.
+int rfid[]={53,55,66,51};         //Arrays for item and payment card identifiers.
+int card_id[]={49,53,55};
+long total=0;                     //Total price.
+//int number;                       //For item counting*
+boolean Display;                        //Flag for item detection and display.
+int reading, reading_1, reading_2;//For storing each rfid reading for comparison.
+int detected[3];
+int i;                              //For comparison of RFID data for identification
+int j;
+boolean conveyor_flag = true;                    //Flag for conveyor motion control.
+boolean serial_initialize= true;                    //Flag for initializing serial communication only once per run.
+boolean done= false;                   //Flag for the payment and access control ISR.
+boolean show_place_card= true;  //Flag for single execution of the "place card on reader" message.
+boolean allow_access=false;
+boolean reset_flags=false;
+boolean top=false;                //position of the access control arm 
+boolean bottom=true;
+boolean bal;                  //balance
+SoftwareSerial portOne(10, 11);     // software serial #1: RX = digital pin 10, TX = digital pin 11
+
+
+const int trigpinA = 50;             //Pins for ultrasonic sensors
+const int echopinA = 52;
+const int trigpinD = 26;
+const int echopinD = 33;
+
+//const int buzzer = 34;
+const int done_key =3;
+const int recharge_key =2;
+                                // conveyor motor
+const int enA = 12;
+const int in1 = 41;
+const int in2 = 22;
+                                // access control motor
+const int enB = 13;
+const int in3 = 43;
+const int in4 = 45;
+
+const int limitswitch_1 = 51;      //Limit switches
+const int limitswitch_2 = 53;
+
+const int pay_en=47;     //enable payment module
+
+long durationA, distanceA; //ultrasonic sensors
+
+
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+void setup()
+{
+ EEPROM.get(0, balance);           // Read the stored balance from EEPROM memory location 0.
+ pinMode(3,INPUT_PULLUP);
+ attachInterrupt(digitalPinToInterrupt(done_key), payment ,LOW);  //Payment interrupt on pin 3.
+ pinMode(2,INPUT_PULLUP);                                  //Recharge interrupt on pin 2.
+ attachInterrupt(digitalPinToInterrupt(recharge_key), recharge ,LOW);
+ 
+ lcd.init();                                              // initialize the lcd 
+ lcd.setBacklight(HIGH);
+ lcd.setCursor(0,0);
+ lcd.print("The Cashierless");
+ lcd.setCursor(3,1);
+ lcd.print("Supermarket");
+ delay(2000);
+
+ pinMode(pay_en,OUTPUT);                                    //For enabling and disabling payment EM-18 module.
+ pinMode(trigpinA, OUTPUT);                             //Ultrasonic sensors
+ pinMode(echopinA, INPUT);
+ pinMode(trigpinD, OUTPUT);
+ pinMode(echopinD, INPUT);
+
+ pinMode(limitswitch_1, INPUT_PULLUP);                       //limit switches
+ pinMode(limitswitch_2, INPUT_PULLUP);
+ //pinMode(buzzer,OUTPUT);                              //Buzzer
+
+                                                      // set all the motor control pins to outputs
+ pinMode(enA, OUTPUT);
+ pinMode(enB, OUTPUT);
+ pinMode(in1, OUTPUT);
+ pinMode(in2, OUTPUT);
+ pinMode(in3, OUTPUT);
+ pinMode(in4, OUTPUT);
+
+ 
+
+}
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+void serialEvent()                                      //ISR's for item identification for each of the EM-18 modules.
+{
+ count=0;
+  while(Serial.available()&&count<12)
+  {
+    input[count]=Serial.read();
+    count++;
+    delay(2);
+  }
+ 
+  for( i=0;i<4;i++){
+  if (int(input[6])==rfid[i])
+    {
+    reading= int(input[6]);
+    if((reading!=detected[0])&&(reading!=detected[1])&&(reading!=detected[2]))
+    {
+    detected[0]=reading;
+    reading=0;  
+    tone(8,600,100);              //speaker tone
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print(item[i]);
+    lcd.setCursor(6,0);
+    lcd.print("price:");
+    lcd.setCursor(13,0);
+    lcd.print(price[i]);
+    total=total+price[i];
+    lcd.setCursor(3,1);
+    lcd.print("Bill:");
+    lcd.setCursor(8,1);
+    lcd.print(total);
+    }
+    }
+    }  
+}
+
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+void serialEvent1()                                   //Module 2
+{
+ count=0;
+  while(Serial1.available()&&count<12)
+  {
+    input[count]=Serial1.read();
+    count++;
+    delay(2);
+  }
+  
+  for(int i=0;i<4;i++){
+  if (int(input[6])==rfid[i])
+    {
+    reading_1=int(input[6]);
+    if((reading_1!=detected[0])&&(reading_1!=detected[1])&&(reading_1!=detected[2]))
+    {
+    detected[1]=reading_1;
+    reading_1=0; 
+      
+    tone(8,600,100);              //speaker tone
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print(item[i]);
+    lcd.setCursor(6,0);
+    lcd.print("price:");
+    lcd.setCursor(13,0);
+    lcd.print(price[i]);
+    total=total+price[i];
+    lcd.setCursor(3,1);
+    lcd.print("Bill:");
+    lcd.setCursor(8,1);
+    lcd.print(total);
+    }
+    }  
+    } 
+}
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+void serialEvent2()                                 //Module 3
+{
+ count=0;
+  while(Serial2.available()&&count<12)
+  {
+    input[count]=Serial2.read();
+    count++;
+    delay(2);
+  }
+  
+  for(int i=0;i<4;i++){
+  if (int(input[6])==rfid[i])
+    {
+    reading_2=int(input[6]);
+     if((reading_2!=detected[0])&&(reading_2!=detected[1])&&(reading_2!=detected[2]))
+    {
+    detected[2]=reading_2;
+    reading_2=0; 
+    
+    tone(8,600,100);              //speaker tone
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print(item[i]);
+    lcd.setCursor(6,0);
+    lcd.print("price:");
+    lcd.setCursor(13,0);
+    lcd.print(price[i]);
+    total=total+price[i];
+    lcd.setCursor(3,1);
+    lcd.print("Bill:");
+    lcd.setCursor(8,1);
+    lcd.print(total);
+    }
+    }  
+    }  
+}
+//------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+void payment()                                //ISR that sets the payment flag.
+{
+  ;              
+}
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+void recharge()                               //ISR that tops up the balance.
+{
+   balance=20000;               
+}
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+void payment_control()                          //Function for payment control
+{
+   portOne.listen();
+  data=0;
+  incoming[6]={0};
+ 
+if(portOne.available())
+{
+  while(portOne.available()&&data<12)
+  {
+    incoming[data]=portOne.read();
+    data++;
+    delay(2);
+   }
+
+ if(incoming[6]==card_id[0])
+ {
+  if(bal)
+  {
+start:
+    digitalWrite(in1, LOW);                                        //Turn off conveyor motor
+    digitalWrite(in2, LOW);
+    conveyor_flag=false;
+    digitalWrite(pay_en,LOW);         //disable payment module
+    
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Card balance:");
+    lcd.setCursor(6,1);
+    lcd.print(balance);
+    delay(2000);
+    tone(8,600,100);                //speaker tone
+    if(balance<total)
+    {
+        tone(8,100,100);
+        lcd.clear();
+        lcd.setCursor(3,0);
+        lcd.print("Insufficient");
+        lcd.setCursor(3,1);
+        lcd.print("balance");
+        delay(1000);
+        lcd.clear();
+        lcd.setCursor(2,0);
+        lcd.print("Press key 2");
+        lcd.setCursor(2,1);
+        lcd.print("To top up");
+        delay(1000);
+        goto start;
+    }
+    
+   
+    balance=balance-total;
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print(" New balance:");
+    lcd.setCursor(4,1);
+    lcd.print(balance);
+    EEPROM.put(0,balance);          //store balance in EEPROM location 0
+    delay(2900);
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Thanks,you can");
+    lcd.setCursor(0,1);
+    lcd.print("now exit");
+    delay(2000);
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Next customer");
+    allow_access=true;
+    done=false;
+    bal=false;
+   }      
+    
+   
+      
+ }
+}
+}
+
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+void item_detect()
+{
+   
+  digitalWrite(trigpinA, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigpinA, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigpinA, LOW);
+  durationA = pulseIn(echopinA, HIGH);
+  distanceA = (durationA / 2) / 29.1;
+  delay(100);
+
+
+    
+
+    if (distanceA <40)
+  {
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+    analogWrite(enA, 230);
+    Serial.println("Motor On");               // set speed to 200 out of possible range 0~255
+    
+
+  }
+  
+ else
+{
+   delay(5000);
+   digitalWrite(in1, LOW);                                        //Turn off motors
+   digitalWrite(in2, LOW); 
+  }
+ }
+
+ //-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+void access_control()
+{    
+    if(bottom)
+    {
+    access_control_up();
+    }
+    if (top)                //utrasonic sensor activated only when limit switch 1 is high ie when motor is moving up
+    {
+      access_control_down();
+    }
+    
+    
+}
+ //-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+void access_control_up()
+{
+  if (digitalRead(limitswitch_1) == HIGH)
+  {
+                                                    //access control motor up
+    digitalWrite(in3, HIGH);
+    digitalWrite(in4, LOW);
+    analogWrite(enB, 205);                            //100% duty cycle
+  }
+  
+  else if ( digitalRead(limitswitch_1) == LOW)
+  {
+                                            //access control motor off
+     digitalWrite(in3, LOW);
+     digitalWrite(in4, LOW);
+     
+     top=true;
+     bottom=false; 
+  }
+  
+}
+ //-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+void access_control_down()
+{
+   
+  long durationD, distanceD;
+   digitalWrite(trigpinD, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigpinD, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigpinD, LOW);
+  durationD = pulseIn(echopinD, HIGH);
+  distanceD = (durationD / 2) / 29.1;
+  delay(100);
+  
+ if (distanceD < 50)
+  {
+    delay(3000);
+    long durationS, distanceS;
+    digitalWrite(trigpinD, LOW);
+    delayMicroseconds(2);
+   digitalWrite(trigpinD, HIGH);
+   delayMicroseconds(10);
+    digitalWrite(trigpinD, LOW);
+    durationS = pulseIn(echopinD, HIGH);
+    distanceS = (durationS / 2) / 29.1;
+    delay(100);
+    
+    if(distanceS > 50)
+    {                                                  
+      digitalWrite(in3, LOW);                          //access control motor down
+      digitalWrite(in4, HIGH);
+      analogWrite(enB, 170);                          //100% duty cycle
+    }
+  }
+ 
+ else if ( digitalRead(limitswitch_2) == LOW)           //re-introduce else!!!!!!!!!!!!!!!!!!!!!!!!
+  { 
+                                           //access control motor off
+     digitalWrite(in3, LOW);
+     digitalWrite(in4, LOW);
+     top=false;
+     bottom=true;
+     reset_flags=true;                    //when motor is down, reset flags and deny access
+     allow_access=false; 
+  }
+}
+ //-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+void loop()
+{ 
+
+  if(serial_initialize)                   //Executed only once per run
+  {
+
+ tone(8,900,600);                   //Speaker tone
+ lcd.clear();
+ lcd.setCursor(0,0);
+ lcd.print("Place card on");
+ lcd.setCursor(0,1);
+ lcd.print("reader when done");
+ delay(2000);
+ lcd.clear();
+ lcd.setCursor(0,0);
+ lcd.print("Place your items");
+ lcd.setCursor(0,1);
+ lcd.print("on the conveyor");
+
+ portOne.begin(9600);
+ digitalWrite(pay_en,HIGH);        //enable payment module.
+ Serial.begin(9600);            //set baud rate for each of the serial ports to 9600bps
+ Serial1.begin(9600);
+ Serial2.begin(9600);
+ Serial3.begin(9600);
+ reading=0;
+ reading_1=0;
+ reading_2=0;
+ detected[0]=0;
+ detected[1]=0;
+ detected[2]=0;
+ conveyor_flag= true;// Conveyor can only move after initialization of serial ports
+ bal=true;
+ serial_initialize= false;
+ 
+  }
+  
+if(conveyor_flag)
+{                    
+     item_detect();// item detection code
+}
+
+payment_control();
+
+    if(allow_access)
+    {
+        access_control();                 //function for access control//Payment and access control function
+      
+    }
+    if(reset_flags)
+    {
+                         //Reset flags
+      serial_initialize=true;
+      Display= false;
+      show_place_card=true;
+      total=0;
+      reset_flags=false;
+    }
+  }
+  //-----------------------------------------------------------------------END--------------------------------------------------------------------------------------
